@@ -290,8 +290,11 @@ jobs:
 
       - name: Configure ns-3 
         working-directory: mmwave-LENA-oran
-        run: ./ns3 configure --disable-python --enable-examples 
+        run: |
+         ./ns3 clean
+          rm -rf build cmake-cache
+         ./ns3 configure --disable-python --enable-examples 
 
       - name: Build ns-3 
         working-directory: mmwave-LENA-oran
-        run: ./ns3 build
+        run: ./ns3 build -j8
