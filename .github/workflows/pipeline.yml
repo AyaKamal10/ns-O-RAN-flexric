@@ -241,6 +241,11 @@ jobs:
             echo "src/nr already populated – skipping clone."
           fi
 
+      - name: Patch oran-interface CMakeLists for linker dependency propagation
+        run: |
+          printf '\nif(TARGET ${liboran-interface} AND TARGET ${libmmwave})\n  target_link_libraries(${liboran-interface} PUBLIC ${libmmwave})\nendif()\nif(TARGET ${liboran-interface} AND TARGET ${liblte})\n  target_link_libraries(${liblte} PUBLIC ${liboran-interface})\nendif()\n' \
+            >> mmwave-LENA-oran/contrib/oran-interface/CMakeLists.txt
+
       - name: Install system build dependencies
         run: |
           sudo apt-get update
