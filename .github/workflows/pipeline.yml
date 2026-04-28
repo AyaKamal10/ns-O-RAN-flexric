@@ -254,6 +254,11 @@ jobs:
           name: e2sim-build
           path: e2sim-kpmv3/
 
+      - name: Install e2sim from downloaded artifact
+        run: |
+          sudo dpkg --install e2sim-kpmv3/e2sim/build/e2sim-dev_1.0.0_amd64.deb
+          sudo ldconfig
+
       - name: Download FlexRIC installed files artifact
         uses: actions/download-artifact@v4
         with:
