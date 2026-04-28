@@ -1,0 +1,358 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ns-O-RAN-flexric  –  CI/CD Pipeline
+#
+# Trigger : workflow_dispatch  (manual – click "Run workflow" in GitHub Actions)
+# Runner  : ubuntu-latest (Ubuntu 24.04)
+#
+# The pipeline has FOUR jobs with the following dependency graph:
+#
+#              ┌─────────────────┐
+#              │  install-deps   │  (validates ALL required packages up-front)
+#              └────────┬────────┘
+#                       │  needs: [install-deps]
+#          ┌────────────┴──────────────┐
+#   ┌──────▼───────┐         ┌─────────▼────────┐
+#   │  test-e2sim  │         │  test-flexric    │
+#   └──────┬───────┘         └────────┬─────────┘
+#          │  upload artifact         │  upload artifact
+#          └────────────┬─────────────┘
+#                       │  needs: [test-e2sim, test-flexric]
+#                ┌──────▼──────┐
+#                │  test-ns3   │  (downloads artifacts, no source re-builds)
+#                └─────────────┘
+#
+# • install-deps  runs first on its own runner and installs every package
+#   required by all three components.  This acts as a fast pre-flight check:
+#   if any package is unavailable on the target Ubuntu version the pipeline
+#   fails here before spending time on the longer build jobs.
+# • test-e2sim  and test-flexric both gate on install-deps and run in parallel.
+#   Each uploads its compiled/installed outputs as a GitHub Actions artifact.
+# • test-ns3    gates on BOTH build jobs succeeding, then downloads the
+#   artifacts and restores them — avoiding any repeated source builds.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: ns-O-RAN-flexric CI
+
+on:
+  workflow_dispatch:   # triggered manually from the GitHub Actions UI
+
+jobs:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 0 – Install Base Dependencies (pre-flight check)
+  #
+  # Installs every package required by all three components in one place.
+  # Running this as a dedicated first job means:
+  #   1. The full dependency list is documented in a single visible step.
+  #   2. Package availability on the Ubuntu runner is verified once, up-front.
+  #   3. test-e2sim and test-flexric only start when this gate passes.
+  #
+  # NOTE: GitHub Actions jobs each run on a fresh virtual machine, so the
+  # packages installed here are NOT automatically available in downstream jobs.
+  # Each build job still installs what it specifically needs.  This job acts
+  # as a canonical, fast-failing smoke-test for the full dependency set.
+  # ───────────────────────────────────────────────────────────────────────────
+  install-deps:
+    name: "Install Base Dependencies"
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Update package list and install all required dependencies
+        run: |
+          sudo apt-get update
+
+          # ── E2SIM requirements ───────────────────────────────────────────
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            cmake \
+            libsctp-dev \
+            autoconf \
+            automake \
+            libtool \
+            bison \
+            flex \
+            libboost-all-dev
+
+          # ── ns-3 requirements ────────────────────────────────────────────
+          # Note: the package name on Ubuntu is g++-13, not g++13.
+          sudo apt-get install -y \
+            g++-13 \
+            python3.8 \
+            libc6-dev
+
+          # ── Optional: SQLite (LENA comparison examples) ──────────────────
+          sudo apt-get install -y sqlite3 libsqlite3-dev
+
+          # ── Optional: Eigen3 (MIMO features) ────────────────────────────
+          sudo apt-get install -y libeigen3-dev
+
+          # ── Docker Compose (GUI features) ────────────────────────────────
+          # Installed separately — see https://docs.docker.com/compose/install/
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 1 – E2SIM
+  # Checks out the e2sim-kpmv3 submodule and builds the E2 simulator.
+  # ───────────────────────────────────────────────────────────────────────────
+  test-e2sim:
+    name: "E2SIM – Build"
+    runs-on: ubuntu-latest
+    needs: [install-deps]  # wait for the pre-flight dependency check
+
+    steps:
+
+      # 1️⃣  Check out the repo AND all nested submodules in one go.
+      #     Without `submodules: recursive` the e2sim-kpmv3/ folder stays empty.
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # 2️⃣  Install every library listed in the README for E2SIM.
+      - name: Install E2SIM build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git cmake \
+            libsctp-dev autoconf automake libtool \
+            bison flex libboost-all-dev g++
+
+      # 3️⃣  The README also lists Python 3.6+ (used by some helper scripts).
+      #     actions/setup-python puts the chosen version first on PATH and
+      #     creates both `python` and `python3` symlinks.
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # 4️⃣  The build script expects a `build/` directory to already exist.
+      - name: Create build directory
+        working-directory: e2sim-kpmv3/e2sim
+        run: mkdir -p build
+
+      # 5️⃣  Run the build.  The argument `3` is the number of parallel jobs
+      #     passed to make inside the script.
+      #     A non-zero exit code will automatically fail this step and the job.
+      - name: Build E2SIM
+        working-directory: e2sim-kpmv3/e2sim
+        run: sudo ./build_e2sim.sh 3
+
+      # 6️⃣  Export the compiled e2sim tree so test-ns3 can download it
+      #     instead of re-cloning the submodule and re-running build_e2sim.sh.
+      #     retention-days: 1 keeps storage costs minimal (single-run CI).
+      - name: Upload e2sim build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2sim-build
+          path: e2sim-kpmv3/
+          retention-days: 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 2 – FlexRIC
+  # Clones FlexRIC from EURECOM GitLab, checks out the pinned commit, builds
+  # with the exact CMake flags required by ns-O-RAN, and installs the SMs.
+  # ───────────────────────────────────────────────────────────────────────────
+  test-flexric:
+    name: "FlexRIC – Build & Install"
+    runs-on: ubuntu-latest
+    needs: [install-deps]  # wait for the pre-flight dependency check
+
+    steps:
+
+      # 1️⃣  Base apt packages required before building anything.
+      #     libsctp-dev python3.8 cmake-curses-gui libpcre2-dev python3-dev
+      #     are explicitly listed in the FlexRIC prerequisites (section 1.1).
+      - name: Install base apt prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git \
+            libsctp-dev libssl-dev \
+            cmake-curses-gui libpcre2-dev \
+            python3-dev python3.8 \
+            libconfig-dev libconfig++-dev \
+            autoconf automake libtool
+
+      # 2️⃣  FlexRIC requires CMake ≥ 3.22.  Ubuntu's default package is often
+      #     older, so we add Kitware's official APT repository (PPA) which
+      #     always provides a recent stable release.
+      - name: Install CMake ≥ 3.22 (Kitware APT repo)
+        run: |
+          sudo apt-get install -y ca-certificates gpg wget
+          wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc \
+            | gpg --dearmor - \
+            | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] \
+          https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/kitware.list
+          sudo apt-get update
+          sudo apt-get install -y cmake
+          cmake --version
+
+      # 3️⃣  FlexRIC requires SWIG ≥ 4.1.  The apt package (swig) on Ubuntu is
+      #     typically 4.0.x, so we build 4.1 from source using the official
+      #     release branch as documented in the FlexRIC prerequisites.
+      - name: Install SWIG 4.1 from source
+        run: |
+          git clone https://github.com/swig/swig.git
+          cd swig
+          git checkout release-4.1
+          ./autogen.sh
+          ./configure --prefix=/usr/
+          make -j$(nproc)
+          sudo make install
+          swig -version
+
+      # 4️⃣  FlexRIC requires gcc/g++ 13 specifically.
+      #     We install gcc-13 / g++-13 and register them as the default
+      #     compiler via update-alternatives so CMake picks them up.
+      - name: Install GCC-13 and set as default compiler
+        run: |
+          sudo apt-get install -y gcc-13 g++-13
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
+          gcc --version
+          g++ --version
+
+      # 5️⃣  Clone from EURECOM GitLab, switch to the `dev` branch, THEN
+      #     hard-reset to the exact pinned commit.  Both steps are needed:
+      #     `git checkout dev` moves the HEAD to the branch; the second
+      #     checkout pins the code to the tested revision.
+      - name: Clone FlexRIC at pinned commit (5bca8030)
+        run: |
+          git clone https://gitlab.eurecom.fr/mosaic5g/flexric.git
+          cd flexric
+          git checkout dev
+          git checkout d3dc645b4
+
+      # 6️⃣  Configure with the flags required by ns-O-RAN:
+      #       -DE2AP_VERSION=E2AP_V1   → E2AP v1.01
+      #       -DKPM_VERSION=KPM_V3_00  → KPM  v3.00
+      #     (FlexRIC defaults differ: E2AP v2.03 / KPM v2.03)
+      - name: Configure FlexRIC (E2AP_V1 / KPM_V3_00)
+        working-directory: flexric
+        run: |
+          mkdir build
+          cd build
+          cmake .. \
+            -DE2AP_VERSION=E2AP_V1 \
+            -DKPM_VERSION=KPM_V3_00
+
+      # 7️⃣  Build using all available cores on the runner.
+      - name: Build FlexRIC
+        working-directory: flexric/build
+        run: make -j8
+
+      # 8️⃣  Install the Service Models (SMs) to /usr/local/lib and
+      #     /usr/local/include so that any subsequent consumer can find them.
+      #     At the same time, re-run with DESTDIR to capture the exact file
+      #     tree that was installed — this staging copy becomes the artifact
+      #     that test-ns3 will download and unpack onto its fresh runner.
+      - name: Install FlexRIC Service Models and package for artifact
+        working-directory: flexric/build
+        run: |
+          sudo make install
+          sudo make DESTDIR=/tmp/flexric-install install
+          tar czf /tmp/flexric-installed.tar.gz -C /tmp/flexric-install .
+
+      # 9️⃣  Upload the captured installed tree.  When extracted with
+      #     `tar xzf ... -C /` on the ns-3 runner it restores every file to
+      #     its original absolute path (e.g. /usr/local/lib/flexric/*.so).
+      - name: Upload FlexRIC installed files artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flexric-install
+          path: /tmp/flexric-installed.tar.gz
+          retention-days: 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 3 – ns-3 mmWave
+  #
+  # Depends on BOTH upstream jobs:
+  #   • test-e2sim   must pass → its compiled e2sim tree (artifact) is needed.
+  #   • test-flexric must pass → its installed SM libraries (artifact) are needed.
+  #
+  # No FlexRIC or e2sim source builds happen here.  Compiled outputs are
+  # downloaded from the artifacts uploaded by the two upstream jobs and
+  # restored to the correct paths on this fresh runner.
+  # ───────────────────────────────────────────────────────────────────────────
+  test-ns3:
+    name: "ns-3 mmWave – Build"
+    runs-on: ubuntu-latest
+    needs: [test-e2sim, test-flexric]  # gates on BOTH upstream jobs
+
+    steps:
+
+      # 1️⃣  Check out with submodules so ns-3-mmwave-oran/ is populated.
+      #     (e2sim-kpmv3/ will be overwritten by the artifact download below.)
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # 2️⃣  Install system build tools that waf and the C++ compiler need.
+      #     These must be installed on every fresh runner; they cannot be
+      #     transferred via artifact.
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git cmake \
+            libsctp-dev libssl-dev \
+            libpcre2-dev \
+            python3-dev python3.8 \
+            libconfig-dev libconfig++-dev
+
+      # 3️⃣  GCC-13 is required to link against the FlexRIC libraries (which
+      #     were compiled with gcc-13 in the test-flexric job).
+      - name: Install GCC-13 and set as default compiler
+        run: |
+          sudo apt-get install -y gcc-13 g++-13
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
+
+      # 4️⃣  Python 3.13 for ns-3's waf build system.
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # 5️⃣  Download the compiled e2sim tree from the test-e2sim job.
+      #     This restores e2sim-kpmv3/ (with its build/ directory) exactly
+      #     as it was after build_e2sim.sh ran — no rebuild needed.
+      - name: Download e2sim build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e2sim-build
+          path: e2sim-kpmv3/
+
+      # 6️⃣  Download the FlexRIC installed-files artifact from test-flexric.
+      #     The tarball's internal paths mirror the absolute install tree
+      #     (e.g. ./usr/local/lib/flexric/...).  Extracting it with `-C /`
+      #     restores every file to its original system path.
+      #     `ldconfig` then refreshes the dynamic-linker cache so the SMs
+      #     are immediately discoverable by the linker during waf configure.
+      - name: Download FlexRIC installed files artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flexric-install
+          path: ${{ github.workspace }}
+
+      - name: Restore FlexRIC installed files to system paths
+        run: |
+          sudo tar xzf flexric-installed.tar.gz -C /
+          sudo ldconfig
+
+      # 7️⃣  Configure ns-3.  waf reads the system for available libraries and
+      #     generates the build configuration.  A failure here means a missing
+      #     dependency or an incompatible FlexRIC / e2sim version.
+      - name: Configure ns-3 with waf
+        working-directory: ns-3-mmwave-oran
+        run: ./waf configure
+
+      # 8️⃣  Compile the full ns-3 mmWave tree.
+      #     A non-zero exit code fails the job and the pipeline.
+      - name: Build ns-3 with waf
+        working-directory: ns-3-mmwave-oran
+        run: ./waf build
