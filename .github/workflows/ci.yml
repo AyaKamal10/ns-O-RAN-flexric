@@ -311,15 +311,22 @@ jobs:
         uses: actions/checkout@v4
 
       # 2️⃣  Explicitly initialise and clone only the ns-3-mmwave-oran submodule.
-      #     Using actions/checkout with submodules:recursive can silently leave
-      #     submodule directories empty (e.g. when a submodule is on a non-default
-      #     branch or the clone times out), which causes "No such file or directory"
-      #     on the working-directory step.  A direct git submodule update --init
-      #     surfaces any error clearly.
-      #     e2sim-kpmv3 is NOT initialised here — it is restored via artifact.
+      #
+      #     WHY two commands?
+      #     `actions/checkout` without `submodules: true` only checks out the
+      #     working tree.  Submodule paths are listed in .gitmodules but are NOT
+      #     yet registered in .git/config, so `git submodule update -- <path>`
+      #     fails with "pathspec did not match any file(s) known to git".
+      #
+      #     `git submodule init` (no path) reads .gitmodules and registers every
+      #     submodule in .git/config without cloning anything.
+      #     `git submodule update --recursive -- ns-3-mmwave-oran` then clones
+      #     only that submodule (leaving e2sim-kpmv3 untouched — it is restored
+      #     from the artifact in step 6️⃣).
       - name: Initialise ns-3-mmwave-oran submodule
         run: |
-          git submodule update --init --recursive -- ns-3-mmwave-oran
+          git submodule init
+          git submodule update --recursive -- ns-3-mmwave-oran
           echo "ns-3-mmwave-oran contents:"
           ls ns-3-mmwave-oran/
 
