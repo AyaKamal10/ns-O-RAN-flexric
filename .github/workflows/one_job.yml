@@ -55,7 +55,6 @@ jobs:
         run: |
           mkdir -p build
           sudo ./build_e2sim.sh 3
-          sudo ldconfig
 
       # ───────────────────────────────────────────────────────────────────────────
       # 3. BUILD & INSTALL FLEXRIC TOOLS (SWIG, ASN1C)
@@ -103,6 +102,7 @@ jobs:
           fi
           # Ensure src/nr is populated
           NR_DIR="mmwave-LENA-oran/src/nr"
+          cd "$NR_DIR" && git checkout Lena_oran
           if [ ! -f "$NR_DIR/CMakeLists.txt" ]; then
             rm -rf "$NR_DIR"
             git clone https://github.com/MinaYonan123/ns3-oran-lena-nr.git "$NR_DIR"
