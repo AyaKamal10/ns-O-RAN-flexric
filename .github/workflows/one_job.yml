@@ -92,22 +92,38 @@ jobs:
       # ───────────────────────────────────────────────────────────────────────────
       # 5. CONFIGURE & BUILD NS-3
       # ───────────────────────────────────────────────────────────────────────────
-      - name: Populate ns-3 Sub-modules
+      - name: Ensure oran-interface is populated
         run: |
-          # Ensure oran-interface is populated
           ORAN_DIR="mmwave-LENA-oran/contrib/oran-interface"
           if [ -z "$(ls -A "$ORAN_DIR" 2>/dev/null)" ]; then
+            echo "oran-interface is empty. cloning it from GitHub..."
             rm -rf "$ORAN_DIR"
             git clone https://github.com/MinaYonan123/oran-interface.git "$ORAN_DIR"
+          else
+            echo "oran-interface already populated – skipping clone."
           fi
-          # Ensure src/nr is populated
+
+      - name: Ensure src/nr is populated
+        run: |
           NR_DIR="mmwave-LENA-oran/src/nr"
-          cd mmwave-LENA-oran/src/nr
-          git checkout Lena_oran
-          if [ ! -f "$NR_DIR/CMakeLists.txt" ]; then
+          
+          if [ ! -d "$NR_DIR" ] || [ -z "$(ls -A "$NR_DIR" 2>/dev/null)" ]; then
+            echo "src/nr is missing or empty – cloning..."
             rm -rf "$NR_DIR"
             git clone https://github.com/MinaYonan123/ns3-oran-lena-nr.git "$NR_DIR"
-            cd "$NR_DIR" && git checkout Lena_oran
+          fi
+
+          cd "$NR_DIR"
+          git fetch origin
+          
+          echo "Attempting to checkout Lena_oran..."
+          git checkout Lena_oran || git checkout -b Lena_oran origin/Lena_oran
+          
+          if [ -f "CMakeLists.txt" ]; then
+            echo "Successfully populated src/nr and checked out Lena_oran."
+          else
+            echo "Error: CMakeLists.txt still missing after checkout!"
+            exit 1
           fi
 
       - name: Build ns-3 
