@@ -7,10 +7,7 @@ name: ns-O-RAN-flexric CI Pipeline 4
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - CI/CD_tests
-      - main
+
 
 jobs:
 
