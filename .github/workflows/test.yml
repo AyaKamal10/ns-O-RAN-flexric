@@ -3,20 +3,27 @@
 # Trigger : workflow_dispatch  (triggered manually from the GitHub Actions UI)
 # Runner  : ubuntu-latest (Ubuntu 24.04)
 
-name: ns-O-RAN-flexric CI Pipeline 2
+name: ns-O-RAN-flexric CI Pipeline 3
 
 on:
   workflow_dispatch:
-
+  push:
+    branches:
+      - CI/CD_tests
+      - main
 
 jobs:
 
-  install-deps:
-    name: "Install Base Dependencies"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 1 – E2SIM
+  # ───────────────────────────────────────────────────────────────────────────
+
+  test-e2sim:
+    name: "E2SIM Build"
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Update package list and install all required dependencies
         run: |
           sudo apt-get update
@@ -25,7 +32,6 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             git \
-            cmake \
             libsctp-dev \
             autoconf \
             automake \
@@ -38,7 +44,6 @@ jobs:
           # Note: the package name on Ubuntu is g++-13, not g++13.
           sudo apt-get install -y \
             g++-13 \
-            python3.8 \
             libc6-dev
 
           # ── Optional: SQLite (LENA comparison examples) ──────────────────
@@ -47,34 +52,21 @@ jobs:
           # ── Optional: Eigen3 (MIMO features) ────────────────────────────
           sudo apt-get install -y libeigen3-dev
 
-  # ───────────────────────────────────────────────────────────────────────────
-  # JOB 1 – E2SIM
-  # ───────────────────────────────────────────────────────────────────────────
-
-  test-e2sim:
-    name: "E2SIM Build"
-    runs-on: ubuntu-latest
-    needs: [install-deps]  
-
-    steps:
+      - name: Setup CMake 4.2.1
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '4.2.1'
 
       - name: Checkout repository with submodules
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install E2SIM build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential git cmake \
-            libsctp-dev autoconf automake libtool \
-            bison flex libboost-all-dev g++
 
-      - name: Set up Python 3.13
+      - name: Set up Python 3.10.18
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.10.18"
 
       - name: Create build directory
         working-directory: e2sim-kpmv3/e2sim
@@ -97,7 +89,6 @@ jobs:
   test-flexric:
     name: "FlexRIC Build & Install"
     runs-on: ubuntu-latest
-    needs: [install-deps]  
 
     steps:
 
@@ -108,22 +99,20 @@ jobs:
             build-essential git \
             libsctp-dev libssl-dev \
             cmake-curses-gui libpcre2-dev \
-            python3-dev python3.8 \
+            python3-dev \
             libconfig-dev libconfig++-dev \
             autoconf automake libtool
-
-      - name: Install CMake ≥ 3.22 (Kitware APT repo)
-        run: |
           sudo apt-get install -y ca-certificates gpg wget
-          wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc \
-            | gpg --dearmor - \
-            | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] \
-          https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main" \
-            | sudo tee /etc/apt/sources.list.d/kitware.list
-          sudo apt-get update
-          sudo apt-get install -y cmake
-          cmake --version
+    
+      - name: Set up Python 3.10.18
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10.18"
+
+      - name: Setup CMake 4.2.1
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '4.2.1'
 
       - name: Install SWIG 4.1 
         run: |
@@ -257,21 +246,29 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential git cmake \
+            build-essential git \
             libsctp-dev libssl-dev \
             libpcre2-dev \
             python3-dev python3.8 \
             libconfig-dev libconfig++-dev
+        
+      - name: Setup CMake 4.2.1
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '4.2.1'
 
       - name: Install GCC-13 and set as default compiler
         run: |
+          sudo apt-get install -y gcc-13 g++-13
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
+          gcc --version
+          g++ --version
 
-      - name: Set up Python 3.13
+      - name: Set up Python 3.10.18
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.10.18"
 
       - name: Download e2sim build artifact
         uses: actions/download-artifact@v4
