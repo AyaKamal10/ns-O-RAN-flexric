@@ -55,6 +55,9 @@ jobs:
         run: |
           mkdir -p build
           sudo ./build_e2sim.sh 3
+          # THIS PART IS CRITICAL:
+          sudo dpkg --install build/e2sim-dev_1.0.0_amd64.deb
+          sudo ldconfig
 
       # ───────────────────────────────────────────────────────────────────────────
       # 3. BUILD & INSTALL FLEXRIC TOOLS (SWIG, ASN1C)
@@ -64,7 +67,7 @@ jobs:
           git clone https://github.com/swig/swig.git
           cd swig && git checkout release-4.1
           ./autogen.sh && ./configure --prefix=/usr/
-          make -j8 && sudo make install
+          make -j$(nproc) && sudo make install
 
       - name: Install asn1c 
         run: |
@@ -85,7 +88,7 @@ jobs:
           git checkout d3dc645b4
           mkdir build && cd build
           cmake .. -DE2AP_VERSION=E2AP_V1 -DKPM_VERSION=KPM_V3_00
-          make -j8
+          make -j$(nproc)
           sudo make install
           sudo ldconfig
 
@@ -120,5 +123,5 @@ jobs:
         working-directory: mmwave-LENA-oran
         run: |
           ./ns3 clean
-          ./ns3 configure --disable-python --enable-examples 
-          ./ns3 build -j8
+          ./ns3 configure 
+          ./ns3 build -j$(nproc)
