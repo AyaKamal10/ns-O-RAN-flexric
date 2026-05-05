@@ -280,7 +280,7 @@ jobs:
         run: |
          ./ns3 clean
           rm -rf cmake-cache build 
-         ./ns3 configure --disable-python --enable-examples 
+         ./ns3 configure 
 
       - name: Build ns-3 
         working-directory: mmwave-LENA-oran

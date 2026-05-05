@@ -125,3 +125,18 @@ jobs:
           ./ns3 clean
           ./ns3 configure 
           ./ns3 build -j$(nproc)
+        
+      - name: Run flexRIC
+        working-directory: flexric/build/examples/ric
+        run: |
+          ./nearRT-RIC
+        
+      - name: Run ns-3 with flexRIC
+        working-directory: mmwave-LENA-oran
+        run: |
+           ./ns3 run scratch/scenario-zero.cc
+     
+      - name: Run kpm_rc xApp
+        working-directory: flexric/build/examples/xapps/kpm_rc
+        run: |
+          ./xapp_kpm_rc
