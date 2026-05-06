@@ -130,40 +130,46 @@ jobs:
         shell: bash
         run: |
 
-          # 1. Start the RIC first — it must be listening before ns-3 connects
-          $GITHUB_WORKSPACE/flexric/build/examples/ric/nearRT-RIC &
+          # 1. Start the RIC — redirect output to file to avoid log flooding
+          $GITHUB_WORKSPACE/flexric/build/examples/ric/nearRT-RIC > /tmp/ric.log 2>&1 &
           RIC_PID=$!
           echo "RIC started (PID: $RIC_PID)"
 
-          # 2. Start ns-3 — no simTime override; simTime is a GlobalValue with no
-          #    cmd.AddValue() binding, so it cannot be set from the command line.
-          #    Default is 1000 sim-seconds which will outlast our CI window.
+          # 2. Start ns-3 — redirect its verbose SINR output to file to avoid step truncation
           cd $GITHUB_WORKSPACE/mmwave-LENA-oran
-          ./ns3 run scratch/scenario-zero.cc &
+          ./ns3 run scratch/scenario-zero.cc > /tmp/ns3.log 2>&1 &
           NS3_PID=$!
           echo "ns-3 E2-Node started (PID: $NS3_PID)"
 
-          # 3. Wait for ns-3 to initialize and establish the E2 connection to the RIC
-          echo "Waiting for E2 connection setup..."
+          # 3. Wait for E2 connection setup
+          echo "Waiting for E2 connection setup (20s)..."
           sleep 20
 
-          # 4. Start the xApp — by now the RIC should have at least one E2 node connected
+          # 4. Start the xApp — keep output visible to confirm it receives KPM data
           echo "Starting xApp..."
-          $GITHUB_WORKSPACE/flexric/build/examples/xApp/c/kpm_rc/xapp_kpm_rc &
+          $GITHUB_WORKSPACE/flexric/build/examples/xApp/c/kpm_rc/xapp_kpm_rc > /tmp/xapp.log 2>&1 &
           XAPP_PID=$!
           echo "xApp started (PID: $XAPP_PID)"
 
-          # 5. Let the integration run for 90 seconds of wall-clock time
+          # 5. Let the integration run for 90s wall-clock time
           echo "Integration test window: 90s..."
           sleep 90
 
-          # 6. Verify all three processes are still alive (crash = test failure)
+          # 6. Show last lines of each log for CI visibility
+          echo "=== RIC log (last 10 lines) ==="
+          tail -n 10 /tmp/ric.log || true
+          echo "=== ns-3 log (last 10 lines) ==="
+          tail -n 10 /tmp/ns3.log || true
+          echo "=== xApp log (last 20 lines) ==="
+          tail -n 20 /tmp/xapp.log || true
+
+          # 7. Verify all three processes are still alive (crash = test failure)
           FAILED=0
           kill -0 $RIC_PID  2>/dev/null || { echo "FAIL: RIC exited unexpectedly";  FAILED=1; }
           kill -0 $NS3_PID  2>/dev/null || { echo "FAIL: ns-3 exited unexpectedly"; FAILED=1; }
           kill -0 $XAPP_PID 2>/dev/null || { echo "FAIL: xApp exited unexpectedly"; FAILED=1; }
 
-          # 7. Cleanup
+          # 8. Cleanup
           echo "Integration test complete. Shutting down all processes..."
           kill $RIC_PID $NS3_PID $XAPP_PID 2>/dev/null || true
 
