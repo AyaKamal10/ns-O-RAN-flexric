@@ -1,0 +1,25 @@
+name: 'Setup O-RAN Build Environment'
+description: 'Installs GCC-13, Python 3.8, and CMake 4.2.1 universally across jobs'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup CMake 4.2.1
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '4.2.1'
+
+    - name: Set up Python 3.8
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.8"
+
+    - name: Install GCC-13 and set as default compiler
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-13 g++-13
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
+        gcc --version
+        g++ --version
