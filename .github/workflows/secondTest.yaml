@@ -1,0 +1,206 @@
+name: ns-O-RAN-flexric Consolidated CI Pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - CI/CD_tests
+      - main
+
+jobs:
+  build-and-test-all:
+    name: "Complete ns-O-RAN Build"
+    runs-on: ubuntu-latest
+
+    steps:
+      # ───────────────────────────────────────────────────────────────────────────
+      # 1. SYSTEM PREREQUISITES & ENVIRONMENT SETUP
+      # ───────────────────────────────────────────────────────────────────────────
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git libsctp-dev libssl-dev \
+            autoconf automake libtool bison flex libboost-all-dev \
+            cmake-curses-gui libpcre2-dev python3-dev \
+            libconfig-dev libconfig++-dev sqlite3 libsqlite3-dev \
+            libeigen3-dev ca-certificates gpg wget m4
+
+      - name: Setup CMake 4.2.1
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '4.2.1'
+
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+
+      - name: Install GCC-13 and set as default
+        run: |
+          sudo apt-get install -y gcc-13 g++-13
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
+
+      # ───────────────────────────────────────────────────────────────────────────
+      # 2. BUILD E2SIM
+      # ───────────────────────────────────────────────────────────────────────────
+      - name: Build and Install E2SIM
+        working-directory: e2sim-kpmv3/e2sim
+        run: |
+          mkdir -p build
+          sudo ./build_e2sim.sh 3
+          # THIS PART IS CRITICAL:
+          sudo dpkg --install build/e2sim-dev_1.0.0_amd64.deb
+          sudo ldconfig
+
+      # ───────────────────────────────────────────────────────────────────────────
+      # 3. BUILD & INSTALL FLEXRIC TOOLS (SWIG, ASN1C)
+      # ───────────────────────────────────────────────────────────────────────────
+      - name: Install SWIG 4.1 
+        run: |
+          git clone https://github.com/swig/swig.git
+          cd swig && git checkout release-4.1
+          ./autogen.sh && ./configure --prefix=/usr/
+          make -j$(nproc) && sudo make install
+
+      - name: Install asn1c 
+        run: |
+          sudo git clone https://github.com/mouse07410/asn1c /tmp/asn1c
+          cd /tmp/asn1c
+          sudo git checkout 940dd5fa9f3917913fd487b13dfddfacd0ded06e
+          sudo autoreconf -iv && sudo ./configure --prefix=/opt/asn1c
+          sudo make -j$(nproc) && sudo make install
+          echo "/opt/asn1c/bin" >> "$GITHUB_PATH"
+
+      # ───────────────────────────────────────────────────────────────────────────
+      # 4. BUILD & INSTALL FLEXRIC
+      # ───────────────────────────────────────────────────────────────────────────
+      - name: Clone and Build FlexRIC
+        run: |
+          git clone https://gitlab.eurecom.fr/mosaic5g/flexric.git
+          cd flexric
+          git checkout d3dc645b4
+          mkdir build && cd build
+          cmake .. -DE2AP_VERSION=E2AP_V1 -DKPM_VERSION=KPM_V3_00
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+
+      # ───────────────────────────────────────────────────────────────────────────
+      # 5. CONFIGURE & BUILD NS-3
+      # ───────────────────────────────────────────────────────────────────────────
+      - name: Ensure oran-interface is populated
+        run: |
+          ORAN_DIR="mmwave-LENA-oran/contrib/oran-interface"
+          if [ -z "$(ls -A "$ORAN_DIR" 2>/dev/null)" ]; then
+            echo "oran-interface is empty. cloning it from GitHub..."
+            rm -rf "$ORAN_DIR"
+            git clone https://github.com/MinaYonan123/oran-interface.git "$ORAN_DIR"
+          else
+            echo "oran-interface already populated – skipping clone."
+          fi
+
+      - name: Ensure src/nr is populated
+        run: |
+          NR_DIR="mmwave-LENA-oran/src/nr"
+          if [ ! -f "$NR_DIR/CMakeLists.txt" ]; then
+            echo "src/nr missing CMakeLists.txt – cloning ns3-oran-lena-nr and checking out Lena_oran..."
+            rm -rf "$NR_DIR"
+            git clone https://github.com/MinaYonan123/ns3-oran-lena-nr.git mmwave-LENA-oran/src/nr
+            cd mmwave-LENA-oran/src/nr
+            git checkout Lena_oran
+          else
+            echo "src/nr already populated – skipping clone."
+          fi
+
+      - name: Build ns-3 
+        working-directory: mmwave-LENA-oran
+        run: |
+          ./ns3 clean
+          ./ns3 configure 
+          ./ns3 build -j$(nproc)
+        
+      - name: Execution and Integration Test 
+        shell: bash
+        run: |
+
+          $GITHUB_WORKSPACE/flexric/build/examples/ric/nearRT-RIC > /tmp/ric.log 2>&1 &
+          RIC_PID=$!
+          echo "RIC started (PID: $RIC_PID)"
+
+          cd $GITHUB_WORKSPACE/mmwave-LENA-oran
+          ./ns3 run scratch/scenario-zero.cc > /tmp/ns3.log 2>&1 &
+          NS3_PID=$!
+          echo "ns-3 E2-Node started (PID: $NS3_PID)"
+
+          echo "Waiting for E2 connection setup (20s)..."
+          sleep 20
+
+          kill -0 $RIC_PID 2>/dev/null || { echo "FAIL: RIC died during startup"; tail -n 20 /tmp/ric.log; exit 1; }
+          kill -0 $NS3_PID 2>/dev/null || { echo "FAIL: ns-3 died during startup"; tail -n 20 /tmp/ns3.log; exit 1; }
+
+          echo "Starting xApp..."
+          $GITHUB_WORKSPACE/flexric/build/examples/xApp/c/kpm_rc/xapp_kpm_rc > /tmp/xapp.log 2>&1
+          XAPP_EXIT=$?
+
+          echo "=== RIC log (last 10 lines) ==="
+          tail -n 10 /tmp/ric.log || true
+          echo "=== ns-3 log (last 10 lines) ==="
+          tail -n 10 /tmp/ns3.log || true
+          echo "=== xApp log (last 30 lines) ==="
+          tail -n 30 /tmp/xapp.log || true
+
+          kill $RIC_PID $NS3_PID 2>/dev/null || true
+
+          if [ $XAPP_EXIT -eq 0 ]; then
+            echo "SUCCESS: xApp completed its test run successfully."
+          else
+            echo "FAIL: xApp exited with code $XAPP_EXIT"
+            exit 1
+          fi
+
+      - name: Test ES xApp with RIC and ns-3
+        continue-on-error: true
+        shell: bash
+        run: |
+
+          $GITHUB_WORKSPACE/flexric/build/examples/ric/nearRT-RIC > /tmp/ric.log 2>&1 &
+          RIC_PID=$!
+          echo "RIC started (PID: $RIC_PID)"
+
+          cd $GITHUB_WORKSPACE/mmwave-LENA-oran
+          ./ns3 run scratch/Energy_saving_with_cell_utilization_scenario.cc > /tmp/ns3.log 2>&1 &
+          NS3_PID=$!
+          echo "ns-3 E2-Node started (PID: $NS3_PID)"
+
+          echo "Waiting for E2 connection setup (20s)..."
+          sleep 20
+
+          kill -0 $RIC_PID 2>/dev/null || { echo "FAIL: RIC died during startup"; tail -n 20 /tmp/ric.log; exit 1; }
+          kill -0 $NS3_PID 2>/dev/null || { echo "FAIL: ns-3 died during startup"; tail -n 20 /tmp/ns3.log; exit 1; }
+
+          echo "Starting xApp..."
+          $GITHUB_WORKSPACE/flexric/build/examples/xApp/c/orange/xapp_es_with_cell_util > /tmp/xapp.log 2>&1
+          XAPP_EXIT=$?
+
+          echo "=== RIC log (last 10 lines) ==="
+          tail -n 10 /tmp/ric.log || true
+          echo "=== ns-3 log (last 10 lines) ==="
+          tail -n 10 /tmp/ns3.log || true
+          echo "=== xApp log (last 30 lines) ==="
+          tail -n 30 /tmp/xapp.log || true
+
+          kill $RIC_PID $NS3_PID 2>/dev/null || true
+
+          if [ $XAPP_EXIT -eq 0 ]; then
+            echo "SUCCESS: xApp completed its test run successfully."
+          else
+            echo "FAIL: xApp exited with code $XAPP_EXIT"
+            exit 1
+          fi  
