@@ -1,4 +1,4 @@
-name: ns-O-RAN-flexric Consolidated CI Pipeline
+name: ns-O-RAN-flexric Pipeline Test 2 xApps
 
 on:
   workflow_dispatch:
@@ -145,7 +145,8 @@ jobs:
           tar -czf /tmp/ns3-build.tar.gz \
             -C $GITHUB_WORKSPACE \
             mmwave-LENA-oran/build/ \
-            mmwave-LENA-oran/cmake-cache/
+            mmwave-LENA-oran/cmake-cache/ \
+            mmwave-LENA-oran/.lock-ns3_linux_build
 
       - name: Upload FlexRIC build artifact
         uses: actions/upload-artifact@v4
