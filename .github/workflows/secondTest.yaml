@@ -141,7 +141,11 @@ jobs:
         run: cp e2sim-kpmv3/e2sim/build/e2sim-dev_1.0.0_amd64.deb /tmp/
 
       - name: Package ns-3 build artifact
-        run: tar -czf /tmp/ns3-build.tar.gz -C $GITHUB_WORKSPACE mmwave-LENA-oran/build/
+        run: |
+          tar -czf /tmp/ns3-build.tar.gz \
+            -C $GITHUB_WORKSPACE \
+            mmwave-LENA-oran/build/ \
+            mmwave-LENA-oran/cmake-cache/
 
       - name: Upload FlexRIC build artifact
         uses: actions/upload-artifact@v4
