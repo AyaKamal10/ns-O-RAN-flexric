@@ -8,14 +8,17 @@ on:
       - main
 
 jobs:
-  build-and-test-all:
-    name: "Complete ns-O-RAN Build"
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JOB 1 — Build FlexRIC & ns-3, upload artifacts
+  # ═══════════════════════════════════════════════════════════════════════════
+  build:
+    name: "Build FlexRIC & ns-3"
     runs-on: ubuntu-latest
 
     steps:
-      # ───────────────────────────────────────────────────────────────────────────
+      # ───────────────────────────────────────────────────────────────────────
       # 1. SYSTEM PREREQUISITES & ENVIRONMENT SETUP
-      # ───────────────────────────────────────────────────────────────────────────
+      # ───────────────────────────────────────────────────────────────────────
       - name: Checkout repository with submodules
         uses: actions/checkout@v4
         with:
@@ -47,9 +50,9 @@ jobs:
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
 
-      # ───────────────────────────────────────────────────────────────────────────
+      # ───────────────────────────────────────────────────────────────────────
       # 2. BUILD E2SIM
-      # ───────────────────────────────────────────────────────────────────────────
+      # ───────────────────────────────────────────────────────────────────────
       - name: Build and Install E2SIM
         working-directory: e2sim-kpmv3/e2sim
         run: |
@@ -59,17 +62,17 @@ jobs:
           sudo dpkg --install build/e2sim-dev_1.0.0_amd64.deb
           sudo ldconfig
 
-      # ───────────────────────────────────────────────────────────────────────────
+      # ───────────────────────────────────────────────────────────────────────
       # 3. BUILD & INSTALL FLEXRIC TOOLS (SWIG, ASN1C)
-      # ───────────────────────────────────────────────────────────────────────────
-      - name: Install SWIG 4.1 
+      # ───────────────────────────────────────────────────────────────────────
+      - name: Install SWIG 4.1
         run: |
           git clone https://github.com/swig/swig.git
           cd swig && git checkout release-4.1
           ./autogen.sh && ./configure --prefix=/usr/
           make -j$(nproc) && sudo make install
 
-      - name: Install asn1c 
+      - name: Install asn1c
         run: |
           sudo git clone https://github.com/mouse07410/asn1c /tmp/asn1c
           cd /tmp/asn1c
@@ -78,9 +81,9 @@ jobs:
           sudo make -j$(nproc) && sudo make install
           echo "/opt/asn1c/bin" >> "$GITHUB_PATH"
 
-      # ───────────────────────────────────────────────────────────────────────────
+      # ───────────────────────────────────────────────────────────────────────
       # 4. BUILD & INSTALL FLEXRIC
-      # ───────────────────────────────────────────────────────────────────────────
+      # ───────────────────────────────────────────────────────────────────────
       - name: Clone and Build FlexRIC
         run: |
           git clone https://gitlab.eurecom.fr/mosaic5g/flexric.git
@@ -92,9 +95,9 @@ jobs:
           sudo make install
           sudo ldconfig
 
-      # ───────────────────────────────────────────────────────────────────────────
+      # ───────────────────────────────────────────────────────────────────────
       # 5. CONFIGURE & BUILD NS-3
-      # ───────────────────────────────────────────────────────────────────────────
+      # ───────────────────────────────────────────────────────────────────────
       - name: Ensure oran-interface is populated
         run: |
           ORAN_DIR="mmwave-LENA-oran/contrib/oran-interface"
@@ -119,14 +122,113 @@ jobs:
             echo "src/nr already populated – skipping clone."
           fi
 
-      - name: Build ns-3 
+      - name: Build ns-3
         working-directory: mmwave-LENA-oran
         run: |
           ./ns3 clean
-          ./ns3 configure 
+          ./ns3 configure
           ./ns3 build -j$(nproc)
-        
-      - name: Execution and Integration Test 
+
+      # ───────────────────────────────────────────────────────────────────────
+      # 6. PACKAGE & UPLOAD ARTIFACTS
+      #    tar is used to preserve executable permissions (upload-artifact
+      #    strips them on Linux).
+      # ───────────────────────────────────────────────────────────────────────
+      - name: Package FlexRIC build artifact
+        run: tar -czf /tmp/flexric-build.tar.gz -C $GITHUB_WORKSPACE flexric/
+
+      - name: Package E2SIM deb artifact
+        run: cp e2sim-kpmv3/e2sim/build/e2sim-dev_1.0.0_amd64.deb /tmp/
+
+      - name: Package ns-3 build artifact
+        run: tar -czf /tmp/ns3-build.tar.gz -C $GITHUB_WORKSPACE mmwave-LENA-oran/build/
+
+      - name: Upload FlexRIC build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flexric-build
+          path: /tmp/flexric-build.tar.gz
+
+      - name: Upload E2SIM deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2sim-deb
+          path: /tmp/e2sim-dev_1.0.0_amd64.deb
+
+      - name: Upload ns-3 build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ns3-build
+          path: /tmp/ns3-build.tar.gz
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JOB 2 — KPM/RC xApp Integration Test
+  # ═══════════════════════════════════════════════════════════════════════════
+  test-kpm-rc:
+    name: "KPM/RC xApp Integration Test"
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install System Runtime Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsctp-dev libssl-dev libboost-all-dev \
+            libconfig-dev libconfig++-dev sqlite3 libsqlite3-dev \
+            libeigen3-dev
+
+      - name: Setup CMake 4.2.1
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '4.2.1'
+
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+
+      - name: Install GCC-13 and set as default
+        run: |
+          sudo apt-get install -y gcc-13 g++-13
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
+
+      - name: Download FlexRIC build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flexric-build
+          path: ${{ github.workspace }}
+
+      - name: Download E2SIM deb artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e2sim-deb
+          path: /tmp/e2sim/
+
+      - name: Download ns-3 build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ns3-build
+          path: ${{ github.workspace }}
+
+      - name: Restore artifacts
+        run: |
+          tar -xzf $GITHUB_WORKSPACE/flexric-build.tar.gz -C $GITHUB_WORKSPACE
+          tar -xzf $GITHUB_WORKSPACE/ns3-build.tar.gz     -C $GITHUB_WORKSPACE
+
+      - name: Install E2SIM and FlexRIC system libraries
+        run: |
+          sudo dpkg --install /tmp/e2sim/e2sim-dev_1.0.0_amd64.deb
+          sudo cmake --install $GITHUB_WORKSPACE/flexric/build
+          sudo ldconfig
+
+      - name: Execution and Integration Test (KPM/RC)
         shell: bash
         run: |
 
@@ -165,8 +267,75 @@ jobs:
             exit 1
           fi
 
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JOB 3 — ES xApp Integration Test
+  # ═══════════════════════════════════════════════════════════════════════════
+  test-es-xapp:
+    name: "ES xApp Integration Test"
+    runs-on: ubuntu-latest
+    needs: build
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install System Runtime Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsctp-dev libssl-dev libboost-all-dev \
+            libconfig-dev libconfig++-dev sqlite3 libsqlite3-dev \
+            libeigen3-dev
+
+      - name: Setup CMake 4.2.1
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '4.2.1'
+
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+
+      - name: Install GCC-13 and set as default
+        run: |
+          sudo apt-get install -y gcc-13 g++-13
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 130
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 130
+
+      - name: Download FlexRIC build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: flexric-build
+          path: ${{ github.workspace }}
+
+      - name: Download E2SIM deb artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: e2sim-deb
+          path: /tmp/e2sim/
+
+      - name: Download ns-3 build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ns3-build
+          path: ${{ github.workspace }}
+
+      - name: Restore artifacts
+        run: |
+          tar -xzf $GITHUB_WORKSPACE/flexric-build.tar.gz -C $GITHUB_WORKSPACE
+          tar -xzf $GITHUB_WORKSPACE/ns3-build.tar.gz     -C $GITHUB_WORKSPACE
+
+      - name: Install E2SIM and FlexRIC system libraries
+        run: |
+          sudo dpkg --install /tmp/e2sim/e2sim-dev_1.0.0_amd64.deb
+          sudo cmake --install $GITHUB_WORKSPACE/flexric/build
+          sudo ldconfig
+
       - name: Test ES xApp with RIC and ns-3
-        continue-on-error: true
         shell: bash
         run: |
 
@@ -186,8 +355,10 @@ jobs:
           kill -0 $NS3_PID 2>/dev/null || { echo "FAIL: ns-3 died during startup"; tail -n 20 /tmp/ns3.log; exit 1; }
 
           echo "Starting xApp..."
-          $GITHUB_WORKSPACE/flexric/build/examples/xApp/c/orange/xapp_es_with_cell_util > /tmp/xapp.log 2>&1
+          timeout 30s $GITHUB_WORKSPACE/flexric/build/examples/xApp/c/orange/xapp_es_with_cell_util > /tmp/xapp.log 2>&1
           XAPP_EXIT=$?
+          # exit 124 means timeout was reached (normal for a continuous-loop xApp)
+          [ $XAPP_EXIT -eq 124 ] && XAPP_EXIT=0
 
           echo "=== RIC log (last 10 lines) ==="
           tail -n 10 /tmp/ric.log || true
@@ -203,4 +374,4 @@ jobs:
           else
             echo "FAIL: xApp exited with code $XAPP_EXIT"
             exit 1
-          fi  
+          fi
