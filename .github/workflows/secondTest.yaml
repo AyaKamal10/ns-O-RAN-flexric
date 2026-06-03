@@ -360,10 +360,10 @@ jobs:
           kill -0 $NS3_PID 2>/dev/null || { echo "FAIL: ns-3 died during startup"; tail -n 20 /tmp/ns3.log; exit 1; }
 
           echo "Starting xApp..."
-          timeout 30s $GITHUB_WORKSPACE/flexric/build/examples/xApp/c/orange/xapp_es_with_cell_util > /tmp/xapp.log 2>&1
+          timeout --kill-after=5s 30s $GITHUB_WORKSPACE/flexric/build/examples/xApp/c/orange/xapp_es_with_cell_util > /tmp/xapp.log 2>&1
           XAPP_EXIT=$?
-          # exit 124 means timeout was reached (normal for a continuous-loop xApp)
-          [ $XAPP_EXIT -eq 124 ] && XAPP_EXIT=0
+
+          { [ $XAPP_EXIT -eq 124 ] || [ $XAPP_EXIT -eq 137 ]; } && XAPP_EXIT=0
 
           echo "=== RIC log (last 10 lines) ==="
           tail -n 10 /tmp/ric.log || true
